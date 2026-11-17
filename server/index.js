@@ -1,3 +1,6 @@
+// Must stay the first import: loads .env before other modules read process.env.
+import { PORT } from './env.js';
+import { fromProjectRoot } from './paths.js';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -52,8 +55,15 @@ import {
 } from './fileManager.js';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
 const HOST = '127.0.0.1'; // Strictly bound to loopback for security
+
+// Answer only requests addressed to this machine by name. A web page that rebinds its own
+// domain to 127.0.0.1 sends same-origin requests (no Origin header) carrying that domain.
+const LOCAL_HOST_HEADER = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+app.use((req, res, next) => {
+  if (LOCAL_HOST_HEADER.test(req.headers.host || '')) return next();
+  res.status(403).send('Forbidden');
+});
 
 // Control CORS origin strictly to local origins
 app.use(cors({
@@ -138,7 +148,7 @@ app.get('/api/browse-filesystem', async (req, res) => {
     folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
 
     const quickLocations = [
-      { name: '📁 Dự án photos/', path: path.resolve(process.cwd(), 'photos') },
+      { name: '📁 Dự án photos/', path: fromProjectRoot('photos') },
       { name: '🖥️ Desktop', path: path.join(homedir, 'Desktop') },
       { name: '🖼️ Pictures', path: path.join(homedir, 'Pictures') },
       { name: '📥 Downloads', path: path.join(homedir, 'Downloads') },
@@ -231,13 +241,15 @@ async function sendCachedImage(req, res, makeImage) {
     if (!relPath) return res.status(400).send('Path is required');
 
     const fullPath = await assertWithinRoot(photosDir, relPath, { allowRoot: false });
-    if (!(await fs.pathExists(fullPath))) {
+    const stats = await fs.stat(fullPath).catch(() => null);
+    if (!stats?.isFile()) {
       return res.status(404).send('File not found');
     }
 
-    const imagePath = await makeImage(fullPath, req);
+    // makeImage returns a cache file it has just found or written (or null).
+    const imagePath = await makeImage(fullPath, req, stats);
     if (res.headersSent) return;
-    if (imagePath && (await fs.pathExists(imagePath))) {
+    if (imagePath) {
       res.setHeader('Cache-Control', 'public, max-age=86400');
       return res.sendFile(path.basename(imagePath), { root: path.dirname(imagePath) });
     }
@@ -251,17 +263,17 @@ async function sendCachedImage(req, res, makeImage) {
   }
 }
 
-app.get('/api/thumbnail', (req, res) => sendCachedImage(req, res, getThumbnail));
+app.get('/api/thumbnail', (req, res) => sendCachedImage(req, res, (fullPath, request, stats) => getThumbnail(fullPath, stats)));
 
 // Screen-sized image for Lightbox / Compare; the original is fetched only on zoom.
 // ?warm=1 only schedules the preview (Lightbox asks for the next few photos).
-app.get('/api/preview', (req, res) => sendCachedImage(req, res, async (fullPath, request) => {
+app.get('/api/preview', (req, res) => sendCachedImage(req, res, async (fullPath, request, stats) => {
   if (request.query.warm === '1') {
-    await getReadyPreview(fullPath, 'low');
+    await getReadyPreview(fullPath, 'low', stats);
     res.status(204).end();
     return null;
   }
-  return getReadyPreview(fullPath);
+  return getReadyPreview(fullPath, 'high', stats);
 }));
 
 app.get('/api/original', async (req, res) => {
@@ -647,7 +659,7 @@ app.post('/api/generate-samples', async (req, res) => {
 });
 
 // Serve static client build if it exists
-const CLIENT_DIST = path.resolve(process.cwd(), 'client', 'dist');
+const CLIENT_DIST = fromProjectRoot('client', 'dist');
 if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST));
   app.use((req, res, next) => {

@@ -2,8 +2,9 @@ import path from 'path';
 import fs from 'fs-extra';
 import crypto from 'crypto';
 import { buildCollectionBackup, buildRestorePlan, validateCollectionBackup } from './collectionBackup.js';
+import { fromProjectRoot } from './paths.js';
 
-let dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve(process.cwd(), 'data');
+let dataDir = fromProjectRoot(process.env.DATA_DIR || 'data');
 let STATE_FILE = path.join(dataDir, 'viewed_state.json');
 let CONFIG_FILE = path.join(dataDir, 'config.json');
 let collectionGeneration = 0;
@@ -39,7 +40,7 @@ let state = {
 };
 
 let config = {
-  photosDir: path.resolve(process.cwd(), 'photos'),
+  photosDir: fromProjectRoot('photos'),
 };
 
 export function getCollectionId(dirPath) {
@@ -227,9 +228,17 @@ function queueStateWrite(write) {
   return queued;
 }
 
+// A queued write that has not started yet saves whatever the state is when it runs,
+// so later callers share it instead of queueing another full rewrite of the file.
+let pendingSave = null;
+
 export function saveState() {
   stateRevision++;
-  return queueStateWrite(() => doAtomicSave());
+  pendingSave ??= queueStateWrite(() => {
+    pendingSave = null;
+    return doAtomicSave();
+  });
+  return pendingSave;
 }
 
 export function getState() {
@@ -440,9 +449,13 @@ export async function setPhotoTriage(relPaths, status = null) {
 }
 
 // Virtual Album operations
+// Own keys only: "__proto__" or "constructor" would otherwise resolve to Object.prototype.
+const hasAlbum = (col, albumId) => typeof albumId === 'string' && Object.hasOwn(col.virtualAlbums, albumId);
+const UNSAFE_ALBUM_IDS = new Set(['__proto__', 'constructor', 'prototype']);
+
 export async function togglePhotoInVirtualAlbum(albumId, relPath, inAlbum = true) {
   const col = getActiveCollection();
-  if (!col.virtualAlbums[albumId]) {
+  if (!hasAlbum(col, albumId)) {
     throw new Error(`Album ảo "${albumId}" không tồn tại`);
   }
   const cleanPath = relPath.replace(/\\/g, '/');
@@ -494,10 +507,10 @@ export async function setPhotoAlbumMembership(albumId, relPaths, inAlbum, photos
 export async function createVirtualAlbum(id, name, quota = 0) {
   const col = getActiveCollection();
   const safeId = id.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-  if (!safeId || !name.trim()) {
+  if (!safeId || UNSAFE_ALBUM_IDS.has(safeId) || !name.trim()) {
     throw new Error('Mã ID và Tên album ảo không hợp lệ');
   }
-  if (col.virtualAlbums[safeId]) {
+  if (hasAlbum(col, safeId)) {
     throw new Error(`Album ảo có mã "${safeId}" đã tồn tại`);
   }
 
@@ -514,7 +527,7 @@ export async function createVirtualAlbum(id, name, quota = 0) {
 
 export async function updateAlbumQuota(albumId, quota) {
   const col = getActiveCollection();
-  if (!col.virtualAlbums[albumId]) {
+  if (!hasAlbum(col, albumId)) {
     throw new Error(`Album ảo "${albumId}" không tồn tại`);
   }
   col.virtualAlbums[albumId].quota = Math.max(0, parseInt(quota, 10) || 0);
@@ -527,7 +540,7 @@ export async function deleteVirtualAlbum(albumId) {
   if (['gate', 'album', 'table', 'slide'].includes(albumId)) {
     throw new Error('Không thể xoá các album ảo mặc định của hệ thống');
   }
-  if (!col.virtualAlbums[albumId]) {
+  if (!hasAlbum(col, albumId)) {
     throw new Error('Album ảo không tồn tại');
   }
 
@@ -553,11 +566,17 @@ export async function saveSession(sessionData) {
 
 // When a photo is moved, update the stored metadata
 export async function updateMetadataOnMove(oldRelPath, newRelPath, photosDir) {
+  if (applyMetadataMove(oldRelPath, newRelPath, photosDir)) await saveState();
+}
+
+// In-memory part of updateMetadataOnMove, so a batch of moves can be saved with one write.
+// Returns whether anything changed.
+export function applyMetadataMove(oldRelPath, newRelPath, photosDir) {
   const col = getActiveCollection(photosDir);
   const oldClean = oldRelPath.replace(/\\/g, '/');
   const newClean = newRelPath.replace(/\\/g, '/');
 
-  if (oldClean === newClean) return;
+  if (oldClean === newClean) return false;
 
   for (const metadata of [col.viewed, col.favorites, col.notes, col.annotations, col.triage]) {
     if (Object.hasOwn(metadata, oldClean)) metadata[newClean] = metadata[oldClean];
@@ -584,8 +603,7 @@ export async function updateMetadataOnMove(oldRelPath, newRelPath, photosDir) {
     }
   }
   if (checkpoint?.anchorPath === oldClean) checkpoint.anchorPath = newClean;
-
-  await saveState();
+  return true;
 }
 
 // When a folder is renamed, update all paths that start with that folder

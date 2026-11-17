@@ -239,13 +239,18 @@ export async function scanDuplicatePhotos(rootDir, { signal } = {}) {
       const file = await open(fullPath, READ_FILE);
       try {
         if (!sameFile(stats, await file.stat({ bigint: true }))) throw new Error('File changed during scan');
-        if (sizes.get(stats.size) > 1) {
+        const sizeShared = sizes.get(stats.size) > 1;
+        if (size <= MAX_PREVIEW_BYTES) {
+          // Read once: the same bytes feed the exact-duplicate hash and the visual fingerprint.
+          const bytes = await readFileBytes(file, size, signal);
+          if (sizeShared) {
+            digest = createHash('sha256').update(bytes).digest('hex');
+            exactGroup = exactByDigest.get(digest);
+          }
+          if (!exactGroup) fingerprint = await imageFingerprint(bytes).catch(() => null);
+        } else if (sizeShared) {
           digest = await hashFile(file, size, signal);
           exactGroup = exactByDigest.get(digest);
-        }
-        if (!exactGroup && size <= MAX_PREVIEW_BYTES) {
-          const bytes = await readFileBytes(file, size, signal);
-          fingerprint = await imageFingerprint(bytes).catch(() => null);
         }
         signal?.throwIfAborted();
         if (!sameFile(stats, await file.stat({ bigint: true }))) throw new Error('File changed during scan');

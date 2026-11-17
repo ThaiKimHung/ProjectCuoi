@@ -3,6 +3,7 @@ import {
   ArrowLeftRight, Check, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Ellipsis, Folder, FolderInput,
   EyeOff, Heart, HelpCircle, MessageSquare, RotateCcw, RotateCw, Undo2, X, Zap, ZoomIn, ZoomOut,
 } from 'lucide-react';
+import { photoImageUrl } from '../api.js';
 import { RETOUCH_PRESETS } from '../constants/retouchPresets.js';
 import { findBurstNeighbor } from '../photoBurst.js';
 
@@ -13,8 +14,8 @@ const TRIAGE_ACTIONS = [
 ];
 
 const ALBUM_SHORTCUTS = { c: 'gate', a: 'album', b: 'table', s: 'slide' };
-const thumbnailUrl = relPath => `/api/thumbnail?path=${encodeURIComponent(relPath)}`;
-const previewUrl = relPath => `/api/preview?path=${encodeURIComponent(relPath)}`;
+const thumbnailUrl = photo => photoImageUrl('thumbnail', photo);
+const previewUrl = photo => photoImageUrl('preview', photo);
 // Swap layers only after the new image is decoded, so there is no blank frame
 // between hiding the smaller image and painting the larger one.
 const markDecoded = (event, setStatus, path) => {
@@ -152,7 +153,7 @@ function Filmstrip({ photos, activePath, onSelect, className = '' }) {
                 active ? 'ring-2 ring-[var(--studio-accent)] ring-offset-2 ring-offset-[var(--studio-bg)]' : 'opacity-60 hover:opacity-100'
               }`}
             >
-              <img src={`/api/thumbnail?path=${encodeURIComponent(photo.relPath)}`} alt="" loading="lazy" className="h-full w-full object-cover" />
+              <img src={thumbnailUrl(photo)} alt="" loading="lazy" className="h-full w-full object-cover" />
               {photo.triage && (
                 <span className={`absolute left-1 top-1 h-2 w-2 rounded-full ring-1 ring-black/40 ${FILMSTRIP_TRIAGE[photo.triage] || ''}`} aria-hidden="true" />
               )}
@@ -265,18 +266,19 @@ export function Lightbox({
   // Once this photo is on screen, have the server prepare the next few previews,
   // so stepping forward shows a ~0.8 MB image instead of decoding a 20–50 MB original.
   const warmedPreviewsRef = useRef(new Set());
-  const upcomingPaths = useMemo(() => {
+  const upcomingPhotos = useMemo(() => {
     const start = currentIndex < 0 ? safeIndex : currentIndex + 1;
-    return photos.slice(start, start + 3).map(p => p.relPath).filter(path => path !== photo?.relPath);
+    return photos.slice(start, start + 3).filter(item => item.relPath !== photo?.relPath);
   }, [photos, currentIndex, safeIndex, photo?.relPath]);
   useEffect(() => {
     if (!(previewReady || originalReady)) return;
-    for (const path of upcomingPaths) {
-      if (warmedPreviewsRef.current.has(path)) continue;
-      warmedPreviewsRef.current.add(path);
-      fetch(`${previewUrl(path)}&warm=1`).catch(() => warmedPreviewsRef.current.delete(path));
+    for (const upcoming of upcomingPhotos) {
+      const url = previewUrl(upcoming);
+      if (warmedPreviewsRef.current.has(url)) continue;
+      warmedPreviewsRef.current.add(url);
+      fetch(`${url}&warm=1`).catch(() => warmedPreviewsRef.current.delete(url));
     }
-  }, [previewReady, originalReady, upcomingPaths]);
+  }, [previewReady, originalReady, upcomingPhotos]);
 
   // Auto-mark as viewed ONLY when newly navigated/opened by user (not re-triggered when unviewed)
   useEffect(() => {
@@ -600,7 +602,7 @@ export function Lightbox({
 
   if (!photo) return null;
 
-  const originalUrl = `/api/original?path=${encodeURIComponent(photo.relPath)}`;
+  const originalUrl = photoImageUrl('original', photo);
   const canCompare = onOpenCompare && (comparisonPhoto || photo.burstPhotos?.length > 1);
   const albums = Object.values(virtualAlbums);
   const showPrevious = currentIndex > 0 || (currentIndex < 0 && lastIndexRef.current > 0 && photos.length > 0);
@@ -810,7 +812,7 @@ export function Lightbox({
             {/* Always mounted: changing its src keeps the last frame painted until the next
                 thumbnail arrives, instead of flashing an empty viewport between photos. */}
             <img
-              src={thumbnailUrl(photo.relPath)}
+              src={thumbnailUrl(photo)}
               alt=""
               aria-hidden="true"
               draggable={false}
@@ -818,8 +820,8 @@ export function Lightbox({
             />
             {!originalReady && (
               <img
-                key={previewUrl(photo.relPath)}
-                src={previewUrl(photo.relPath)}
+                key={previewUrl(photo)}
+                src={previewUrl(photo)}
                 alt={photo.name}
                 draggable={false}
                 onLoad={event => markDecoded(event, setPreviewStatus, photo.relPath)}

@@ -4,6 +4,7 @@ import {
   ArrowLeftRight, Check, ChevronLeft, ChevronRight,
   HelpCircle, Link2, Unlink, RotateCcw, Search, LayoutGrid, CheckSquare, Square
 } from 'lucide-react';
+import { photoImageUrl } from '../api.js';
 import { getBurstComparisonStep } from './compareBurst.js';
 import {
   assignComparisonSlot,
@@ -408,8 +409,8 @@ export function CompareModal({
 
   // Screen-sized previews at fit size; full originals only once zoomed in.
   const imageEndpoint = zoom > 1 ? 'original' : 'preview';
-  const urlA = `/api/${imageEndpoint}?path=${encodeURIComponent(currentPhotoA.relPath)}`;
-  const urlB = `/api/${imageEndpoint}?path=${encodeURIComponent(currentPhotoB.relPath)}`;
+  const urlA = photoImageUrl(imageEndpoint, currentPhotoA);
+  const urlB = photoImageUrl(imageEndpoint, currentPhotoB);
 
   const activePanA = pan;
   const activePanB = isSyncPan ? pan : panB;
@@ -659,7 +660,7 @@ export function CompareModal({
                       title={`Đưa ${item.name} vào Khung ${activeSlot}`}
                     >
                       <img
-                        src={`/api/thumbnail?path=${encodeURIComponent(item.relPath)}`}
+                        src={photoImageUrl('thumbnail', item)}
                         alt={item.name}
                         loading="lazy"
                         className="w-full h-16 object-cover bg-black"

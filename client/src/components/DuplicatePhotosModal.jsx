@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowLeftRight, Check, ExternalLink, Files, HelpCircle, LoaderCircle, ScanSearch, X } from 'lucide-react';
-import { fetchDuplicatePhotos } from '../api.js';
+import { fetchDuplicatePhotos, photoImageUrl } from '../api.js';
 
 const GROUP_PAGE_SIZE = 8;
 const PHOTO_PAGE_SIZE = 12;
@@ -45,7 +45,6 @@ function DuplicateGroup({ photos, number, onCompare, photoByPath, onSetTriage, o
       <ul className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
         {photos.slice(0, visibleCount).map(photo => {
           const selectedIndex = selected.indexOf(photo);
-          const encodedPath = encodeURIComponent(photo.relPath);
           const meta = photoByPath?.get(photo.relPath) || photo;
           const triage = meta.triage || null;
           const badge = triage ? TRIAGE_BADGES[triage] : null;
@@ -64,7 +63,7 @@ function DuplicateGroup({ photos, number, onCompare, photoByPath, onSetTriage, o
                 className="relative flex w-full flex-1 flex-col overflow-hidden rounded-lg border border-transparent text-left transition hover:bg-white/5 focus-visible:outline focus-visible:outline-rose-200 aria-pressed:border-rose-300/50 aria-pressed:bg-rose-300/10"
               >
                 <img
-                  src={`/api/thumbnail?path=${encodedPath}`}
+                  src={photoImageUrl('thumbnail', photo)}
                   alt=""
                   loading="lazy"
                   decoding="async"
@@ -142,7 +141,7 @@ function DuplicateGroup({ photos, number, onCompare, photoByPath, onSetTriage, o
               )}
 
               <a
-                href={`/api/original?path=${encodedPath}`}
+                href={photoImageUrl('original', photo)}
                 target="_blank"
                 rel="noreferrer"
                 aria-label={`Mở ảnh gốc ${photo.relPath} trong thẻ mới`}

@@ -4,7 +4,7 @@ import {
   Sparkles, FileText, CheckCircle2,
   Package, AlertTriangle, Edit3, ChevronDown
 } from 'lucide-react';
-import { copyPhotosToExport, exportCategorizedPackage, updateAlbumQuota } from '../api.js';
+import { copyPhotosToExport, exportCategorizedPackage, photoImageUrl, updateAlbumQuota } from '../api.js';
 import { buildStudioPackage } from './studioPackagePreview.js';
 import { DialogShell } from './DialogShell.jsx';
 
@@ -29,7 +29,7 @@ function PackageThumbnails({ photos, description, defaultExpanded = false }) {
           {photos.map(photo => (
             <li key={photo.relPath} title={photo.relPath} className="min-w-0 rounded-lg bg-slate-900 border border-slate-800 overflow-hidden">
               <img
-                src={`/api/thumbnail?path=${encodeURIComponent(photo.relPath)}`}
+                src={photoImageUrl('thumbnail', photo)}
                 alt={photo.name}
                 loading="lazy"
                 decoding="async"

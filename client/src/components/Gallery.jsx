@@ -5,7 +5,9 @@ import {
   MessageSquare, RotateCcw, Search, Send, Sparkles, Square, Tag, X,
 } from 'lucide-react';
 import { PhotoCard } from './PhotoCard.jsx';
+import { photoImageUrl } from '../api.js';
 import { countGridColumns, gridKeyAction, isTypingTarget, nextGridIndex } from '../gridKeyboard.js';
+import { findBurstNeighbor } from '../photoBurst.js';
 
 const SHORTCUTS = [
   ['← → ↑ ↓', 'Di chuyển giữa các ảnh'],
@@ -321,7 +323,34 @@ export function Gallery({
   keyState.current = {
     keyboardEnabled, displayedPhotos, cursorIndex, viewMode, selectedPaths,
     onCursorChange, onToggleSelect, onSetTriage, onToggleFavorite, onToggleViewed, onOpenLightbox, helpOpen,
+    onOpenCompare, selectedFiles, photos, collectionPhotos,
   };
+
+  // Stable handlers for the memoized PhotoCards; each reads the latest props from keyState.
+  const cardActions = useMemo(() => {
+    const latest = () => keyState.current;
+    return {
+      open: (event, relPath) => {
+        if (event.shiftKey) latest().onToggleSelect(relPath, true);
+        else latest().onOpenLightbox(relPath);
+      },
+      toggleSelect: (relPath, extendRange) => {
+        latest().onCursorChange?.(relPath);
+        latest().onToggleSelect(relPath, extendRange);
+      },
+      toggleViewed: (relPath, viewed) => latest().onToggleViewed(relPath, viewed),
+      toggleFavorite: (relPath, favorite) => latest().onToggleFavorite(relPath, favorite),
+      setTriage: (files, status) => latest().onSetTriage?.(files, status),
+      compareBurst: photo => {
+        const { onOpenCompare: openCompare, photos: visible, collectionPhotos: collection } = latest();
+        openCompare?.(photo, findBurstNeighbor(photo, visible, collection));
+      },
+      dragFiles: (relPath, isSelected) => {
+        const { selectedFiles: selected } = latest();
+        return isSelected && selected.length > 0 ? selected : [relPath];
+      },
+    };
+  }, []);
 
   useEffect(() => {
     if (!helpOpen) return;
@@ -409,10 +438,7 @@ export function Gallery({
     setCompact(isCompact => (isCompact ? el.scrollTop > 8 : el.scrollTop > 96 && room > 320));
   };
 
-  const handlePhotoClick = (event, relPath) => {
-    if (event.shiftKey) onToggleSelect(relPath, true);
-    else onOpenLightbox(relPath);
-  };
+  const handlePhotoClick = cardActions.open;
 
   return (
     <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -710,7 +736,7 @@ export function Gallery({
               <tbody className="divide-y divide-slate-800/60">
                 {displayedPhotos.map((photo, index) => {
                   const isSelected = selectedPaths.has(photo.relPath);
-                  const thumbUrl = `/api/thumbnail?path=${encodeURIComponent(photo.relPath)}`;
+                  const thumbUrl = photoImageUrl('thumbnail', photo);
                   return (
                     <tr
                       key={photo.relPath}
@@ -854,19 +880,12 @@ export function Gallery({
                 photo={photo}
                 position={index + 1}
                 showFolder={!currentFolder}
-                allPhotos={photos}
-                collectionPhotos={collectionPhotos}
                 isSelected={selectedPaths.has(photo.relPath)}
                 observePhoto={typeof IntersectionObserver === 'function' ? observePhoto : undefined}
                 isCursor={index === cursorIndex}
-                onToggleSelect={event => { onCursorChange?.(photo.relPath); onToggleSelect(photo.relPath, event.shiftKey); }}
-                onOpenLightbox={event => handlePhotoClick(event, photo.relPath)}
-                onToggleViewed={onToggleViewed}
-                onToggleFavorite={onToggleFavorite}
-                onSetTriage={onSetTriage}
-                onOpenCompare={onOpenCompare}
+                actions={cardActions}
+                canTriage={Boolean(onSetTriage)}
                 virtualAlbums={virtualAlbums}
-                selectedFiles={selectedFiles}
               />
             ))}
           </div>

@@ -32,6 +32,15 @@ async function apiClient(endpoint, options = {}) {
   return data;
 }
 
+// URL of a photo image: kind is 'thumbnail', 'preview' or 'original'. The server lets the
+// browser cache these, so the file's mtime is part of the URL: an edited photo saved under
+// the same name gets a new URL instead of the old cached image.
+export function photoImageUrl(kind, photo) {
+  const params = new URLSearchParams({ path: photo.relPath });
+  if (photo.mtime) params.set('v', String(Math.round(photo.mtime)));
+  return `${BASE_URL}/${kind}?${params}`;
+}
+
 export function fetchConfig() {
   return apiClient('/config');
 }

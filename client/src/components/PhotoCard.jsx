@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Camera, Check, CheckCircle2, Circle, Folder, Heart, HelpCircle, MessageSquare, Target, X } from 'lucide-react';
-import { findBurstNeighbor } from '../photoBurst.js';
+import { photoImageUrl } from '../api.js';
 
 // tone: badge under the photo (light theme). solid: pressed button drawn on the photo.
 const TRIAGE_ACTIONS = [
@@ -9,23 +9,19 @@ const TRIAGE_ACTIONS = [
   { id: 'reject', label: 'Bỏ qua', shortcut: '3', icon: X, tone: 'bg-stone-800 text-stone-300', solid: 'bg-black/90 text-paper' },
 ];
 
-export function PhotoCard({
+// Memoized: the gallery re-renders on every app state change (each Lightbox step, cursor
+// move, toast) and most cards have not changed. Handlers arrive through `actions`, a stable
+// object from Gallery that always calls the latest props.
+export const PhotoCard = React.memo(function PhotoCard({
   photo,
   position,
   showFolder = true,
-  allPhotos,
-  collectionPhotos,
   isSelected,
   isCursor = false,
   observePhoto,
-  onToggleSelect,
-  onOpenLightbox,
-  onToggleViewed,
-  onToggleFavorite,
-  onSetTriage,
-  onOpenCompare,
+  actions,
+  canTriage = false,
   virtualAlbums,
-  selectedFiles,
 }) {
   const cardRef = useRef(null);
   const [nearViewport, setNearViewport] = useState(false);
@@ -44,14 +40,9 @@ export function PhotoCard({
   const hasTags = folderTag || triage || photo.albums?.length > 0;
 
   const handleDragStart = (e) => {
-    const files = isSelected && selectedFiles.length > 0 ? selectedFiles : [photo.relPath];
+    const files = actions.dragFiles(photo.relPath, isSelected);
     e.dataTransfer.setData('application/json', JSON.stringify({ files }));
     e.dataTransfer.effectAllowed = 'copyMove';
-  };
-
-  const handleCompareBurst = () => {
-    const neighbor = findBurstNeighbor(photo, allPhotos, collectionPhotos);
-    onOpenCompare?.(photo, neighbor);
   };
 
   return (
@@ -73,13 +64,13 @@ export function PhotoCard({
       <div className="relative aspect-[4/3] overflow-hidden bg-stone-800">
         <button
           type="button"
-          onClick={onOpenLightbox}
+          onClick={event => actions.open(event, photo.relPath)}
           className="photo-open absolute inset-0 w-full"
           aria-label={`Mở ảnh ${photo.name}`}
         >
           {showMedia && (
             <img
-              src={`/api/thumbnail?path=${encodeURIComponent(photo.relPath)}`}
+              src={photoImageUrl('thumbnail', photo)}
               alt={photo.name}
               loading="lazy"
               className="h-full w-full object-cover"
@@ -91,7 +82,7 @@ export function PhotoCard({
           <div className="photo-hover flex items-center gap-1">
             <button
               type="button"
-              onClick={onToggleSelect}
+              onClick={event => actions.toggleSelect(photo.relPath, event.shiftKey)}
               className="photo-icon"
               aria-label={`Chọn ảnh ${photo.name}`}
               aria-pressed={isSelected}
@@ -103,7 +94,7 @@ export function PhotoCard({
             {photo.burstTotal >= 2 && (
               <button
                 type="button"
-                onClick={handleCompareBurst}
+                onClick={() => actions.compareBurst(photo)}
                 className="pointer-events-auto flex h-7 shrink-0 items-center gap-1 rounded-full bg-black/55 px-2 text-[10px] font-medium text-paper backdrop-blur-sm hover:bg-black/75"
                 aria-label={`So sánh ảnh chụp liên tiếp ${photo.burstIndex}/${photo.burstTotal}`}
                 title="So sánh ảnh chụp liên tiếp"
@@ -117,7 +108,7 @@ export function PhotoCard({
           <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={() => onToggleViewed(photo.relPath, !photo.isViewed)}
+              onClick={() => actions.toggleViewed(photo.relPath, !photo.isViewed)}
               className="photo-icon photo-hover"
               aria-label={`Đánh dấu ${photo.isViewed ? 'chưa xem' : 'đã xem'} ${photo.name}`}
               aria-pressed={photo.isViewed}
@@ -127,7 +118,7 @@ export function PhotoCard({
             </button>
             <button
               type="button"
-              onClick={() => onToggleFavorite(photo.relPath, !photo.isFavorite)}
+              onClick={() => actions.toggleFavorite(photo.relPath, !photo.isFavorite)}
               className={`photo-icon ${photo.isFavorite ? '!bg-paper !text-red-600' : 'photo-hover'}`}
               aria-label={`Yêu thích ${photo.name}`}
               aria-pressed={photo.isFavorite}
@@ -138,13 +129,13 @@ export function PhotoCard({
           </div>
         </div>}
 
-        {showMedia && onSetTriage && (
+        {showMedia && canTriage && (
           <div className="photo-triage pointer-events-none absolute inset-x-0 bottom-1.5 flex justify-center gap-1">
             {TRIAGE_ACTIONS.map(({ id, label, shortcut, icon: Icon, solid }) => (
               <button
                 key={id}
                 type="button"
-                onClick={() => onSetTriage([photo.relPath], photo.triage === id ? null : id)}
+                onClick={() => actions.setTriage([photo.relPath], photo.triage === id ? null : id)}
                 aria-pressed={photo.triage === id}
                 aria-label={`${label} ${photo.name}`}
                 title={`${label} (phím ${shortcut})`}
@@ -205,4 +196,4 @@ export function PhotoCard({
       </div>
     </article>
   );
-}
+});

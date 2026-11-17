@@ -3,7 +3,7 @@ import {
   X, Check, Trash2, Download, Plus, CircleDot, 
   HelpCircle, Sparkles, MessageSquare, Tag, Eye 
 } from 'lucide-react';
-import { savePhotoAnnotations } from '../api.js';
+import { photoImageUrl, savePhotoAnnotations } from '../api.js';
 import { RETOUCH_PRESETS } from '../constants/retouchPresets.js';
 
 export function AnnotationModal({
@@ -92,7 +92,7 @@ export function AnnotationModal({
 
   if (!isOpen || !photo) return null;
 
-  const originalUrl = `/api/original?path=${encodeURIComponent(photo.relPath)}`;
+  const originalUrl = photoImageUrl('original', photo);
 
   // Handle click on image to place new annotation
   const handleImageClick = (e) => {

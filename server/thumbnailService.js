@@ -4,10 +4,11 @@ import fs from 'fs-extra';
 import sharp from 'sharp';
 import crypto from 'crypto';
 import { fileIdentity } from './fileIdentity.js';
+import { fromProjectRoot } from './paths.js';
 
 export { fileIdentity };
 
-const CACHE_ROOT = path.resolve(process.env.CURATOR_CACHE_DIR || path.join(process.cwd(), '.cache'));
+const CACHE_ROOT = fromProjectRoot(process.env.CURATOR_CACHE_DIR || '.cache');
 
 // thumb: gallery cards. preview: Lightbox / Compare, sharp enough for a retina
 // screen at "fit" size; the original is only loaded when the user zooms in.
@@ -90,9 +91,10 @@ async function render(kind, fullPath, cacheFile) {
   }
 }
 
-async function getCachedImage(kind, fullPath, priority = 'high') {
+// `stats` may be passed by a caller that has already stat'ed the photo.
+async function getCachedImage(kind, fullPath, priority = 'high', stats = null) {
   try {
-    const stats = await fs.stat(fullPath);
+    stats ??= await fs.stat(fullPath);
     const cacheFile = cacheFileFor(kind, fullPath, stats);
     if (await fs.pathExists(cacheFile)) return cacheFile;
     return await schedule(cacheFile, () => render(kind, fullPath, cacheFile), priority);
@@ -102,8 +104,8 @@ async function getCachedImage(kind, fullPath, priority = 'high') {
   }
 }
 
-export function getThumbnail(fullPath) {
-  return getCachedImage('thumb', fullPath);
+export function getThumbnail(fullPath, stats = null) {
+  return getCachedImage('thumb', fullPath, 'high', stats);
 }
 
 export function getPreview(fullPath) {
@@ -113,9 +115,9 @@ export function getPreview(fullPath) {
 // Making a preview of a 24 MP photo costs about as much as the browser loading the
 // original, so the preview only pays off when it is ready ahead of time. This
 // returns the cached preview, or null after scheduling one (caller sends the original).
-export async function getReadyPreview(fullPath, priority = 'high') {
+export async function getReadyPreview(fullPath, priority = 'high', stats = null) {
   try {
-    const stats = await fs.stat(fullPath);
+    stats ??= await fs.stat(fullPath);
     const cacheFile = cacheFileFor('preview', fullPath, stats);
     if (await fs.pathExists(cacheFile)) return cacheFile;
     schedule(cacheFile, () => render('preview', fullPath, cacheFile), priority).catch(error => {

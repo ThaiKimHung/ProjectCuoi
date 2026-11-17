@@ -28,6 +28,7 @@ import { CollectionBackupModal } from './components/CollectionBackupModal.jsx';
 import { DialogShell } from './components/DialogShell.jsx';
 import { findBurstNeighbor } from './photoBurst.js';
 import { addPhotoSelectionRange } from './photoSelection.js';
+import { countPhotoStats } from './photoStats.js';
 import { useBackToClose } from './useBackToClose.js';
 import {
   captureReviewScroll, discardPendingReviewSession, moveReviewCheckpoint, readPendingReviewSession,
@@ -301,7 +302,17 @@ export default function App() {
     return flattenTree(tree);
   }, [tree]);
 
-  const selectedPhotoObjects = useMemo(() => photos.filter(p => selectedFiles.includes(p.relPath)), [photos, selectedFiles]);
+  const selectedPhotoObjects = useMemo(() => {
+    const selected = new Set(selectedFiles);
+    return photos.filter(p => selected.has(p.relPath));
+  }, [photos, selectedFiles]);
+
+  // With the 'all' filter every photo of the folder is loaded, so the counters follow local
+  // changes (ratings, favorites, viewed, albums) without asking the server again.
+  const galleryStats = useMemo(
+    () => (filter === 'all' && loadedGalleryKey === galleryKey ? countPhotoStats(photos) : stats),
+    [filter, loadedGalleryKey, galleryKey, photos, stats],
+  );
 
   // Derived displayed photos taking search query into account (Fix for issues #5 and #6)
   const displayedPhotos = useMemo(() => {
@@ -607,22 +618,22 @@ export default function App() {
       };
       setAllProjectPhotos(prev => prev.map(updateTriage));
       updateRetainedPhoto(updateTriage);
-      // Recalculate stats with fresh server data
+      if (filterAtStart === 'all') {
+        // The whole folder is loaded: update it in place; galleryStats recounts locally.
+        setPhotos(prev => prev.map(updateTriage));
+        return;
+      }
+      // A filter is active (e.g. 'pick', 'unassigned'): refetch so photos that no longer
+      // match leave the view, and take the folder counters from the server.
       const refreshed = await fetchPhotos(folderAtStart, filterAtStart, sortAtStart);
       // Drop stale response if user switched folders or filters while async request was in-flight
       if (currentFolderRef.current !== folderAtStart || filterRef.current !== filterAtStart) {
         return;
       }
 
-      if (filterAtStart !== 'all') {
-        // If a filter is active (e.g. 'pick', 'maybe', 'reject', 'unassigned'),
-        // update photos so photos no longer matching the filter are removed from the view
-        setPhotos(refreshed.photos || []);
-        const remainingRelPaths = new Set((refreshed.photos || []).map(p => p.relPath));
-        setSelectedFiles(prev => prev.filter(f => remainingRelPaths.has(f)));
-      } else {
-        setPhotos(prev => prev.map(updateTriage));
-      }
+      setPhotos(refreshed.photos || []);
+      const remainingRelPaths = new Set((refreshed.photos || []).map(p => p.relPath));
+      setSelectedFiles(prev => prev.filter(f => remainingRelPaths.has(f)));
       setStats({
         totalCount: refreshed.totalCount || 0,
         viewedCount: refreshed.viewedCount || 0,
@@ -681,18 +692,20 @@ export default function App() {
       };
       setAllProjectPhotos(prev => prev.map(updateGroupTriage));
       updateRetainedPhoto(updateGroupTriage);
+      showToast(`Đã chọn giữ “${keepPath.split('/').pop()}” và bỏ qua ${otherList.length} bản trùng.`);
 
+      if (filterAtStart === 'all') {
+        // The whole folder is loaded: update it in place; galleryStats recounts locally.
+        setPhotos(prev => prev.map(updateGroupTriage));
+        return;
+      }
       const refreshed = await fetchPhotos(folderAtStart, filterAtStart, sortAtStart);
       if (currentFolderRef.current !== folderAtStart || filterRef.current !== filterAtStart) {
         return;
       }
-      if (filterAtStart !== 'all') {
-        setPhotos(refreshed.photos || []);
-        const remainingRelPaths = new Set((refreshed.photos || []).map(p => p.relPath));
-        setSelectedFiles(prev => prev.filter(f => remainingRelPaths.has(f)));
-      } else {
-        setPhotos(prev => prev.map(updateGroupTriage));
-      }
+      setPhotos(refreshed.photos || []);
+      const remainingRelPaths = new Set((refreshed.photos || []).map(p => p.relPath));
+      setSelectedFiles(prev => prev.filter(f => remainingRelPaths.has(f)));
       setStats({
         totalCount: refreshed.totalCount || 0,
         viewedCount: refreshed.viewedCount || 0,
@@ -704,7 +717,6 @@ export default function App() {
         notedCount: refreshed.notedCount || 0,
         burstCount: refreshed.burstCount || 0,
       });
-      showToast(`Đã chọn giữ “${keepPath.split('/').pop()}” và bỏ qua ${otherList.length} bản trùng.`);
     } catch (err) {
       showToast(err.message || 'Lỗi khi cập nhật lựa chọn nhóm ảnh trùng', 'error');
     }
@@ -927,8 +939,11 @@ export default function App() {
         showToast('Đã hoàn tác trạng thái xem');
       } else if (action.type === 'batch-viewed') {
         setRedoStack(prev => [...prev, { type: 'batch-viewed', files: action.files, prevValues: action.prevValues, nextValue: action.nextValue }]);
-        for (const [f, prevVal] of Object.entries(action.prevValues)) {
-          await markPhotosViewed([f], prevVal);
+        // One request per previous value (viewed / not viewed), not one per photo.
+        const filesByValue = new Map([[true, []], [false, []]]);
+        for (const [file, prevVal] of Object.entries(action.prevValues)) filesByValue.get(Boolean(prevVal)).push(file);
+        for (const [viewed, files] of filesByValue) {
+          if (files.length) await markPhotosViewed(files, viewed);
         }
         showToast('Đã hoàn tác trạng thái xem hàng loạt');
       }
@@ -1394,6 +1409,11 @@ export default function App() {
   useBackToClose(compareModal.isOpen, handleCloseCompare);
 
   const exportPhotos = packageSnapshot?.photos ?? allProjectPhotos;
+  // Only needed while the export dialog is open; App re-renders on every Lightbox step.
+  const exportFavoritePhotos = useMemo(
+    () => (exportModal ? exportPhotos.filter(p => p.isFavorite) : []), [exportModal, exportPhotos]);
+  const exportViewedPhotos = useMemo(
+    () => (exportModal ? exportPhotos.filter(p => p.isViewed) : []), [exportModal, exportPhotos]);
   const libraryCovered = exportModal || backupModal || duplicateModal || resetViewedModal;
 
   return (
@@ -1513,15 +1533,15 @@ export default function App() {
           photos={photos}
           collectionPhotos={allProjectPhotos}
           displayedPhotos={displayedPhotos}
-          totalCount={stats.totalCount}
-          viewedCount={stats.viewedCount}
-          favoriteCount={stats.favoriteCount}
-          pickedCount={stats.pickedCount}
-          maybeCount={stats.maybeCount}
-          rejectedCount={stats.rejectedCount}
-          unassignedPickCount={stats.unassignedPickCount}
-          notedCount={stats.notedCount}
-          burstCount={stats.burstCount}
+          totalCount={galleryStats.totalCount}
+          viewedCount={galleryStats.viewedCount}
+          favoriteCount={galleryStats.favoriteCount}
+          pickedCount={galleryStats.pickedCount}
+          maybeCount={galleryStats.maybeCount}
+          rejectedCount={galleryStats.rejectedCount}
+          unassignedPickCount={galleryStats.unassignedPickCount}
+          notedCount={galleryStats.notedCount}
+          burstCount={galleryStats.burstCount}
           filter={filter}
           onChangeFilter={value => { setResumeRequest(null); setFilter(value); }}
           sort={sort}
@@ -1712,8 +1732,8 @@ export default function App() {
         packagePhotosError={packagePhotosError}
         onRetryPackagePhotos={loadPackagePhotos}
         selectedPhotos={selectedPhotoObjects}
-        favoritePhotos={exportPhotos.filter(p => p.isFavorite)}
-        viewedPhotos={exportPhotos.filter(p => p.isViewed)}
+        favoritePhotos={exportFavoritePhotos}
+        viewedPhotos={exportViewedPhotos}
         virtualAlbums={packageSnapshot?.albums ?? virtualAlbums}
         onSuccessToast={showToast}
         onRefreshTree={refreshTree}

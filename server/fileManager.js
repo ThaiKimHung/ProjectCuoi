@@ -2,13 +2,14 @@ import path from 'path';
 import { randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import fs from 'fs-extra';
-import { getState, updateMetadataOnMove, updateMetadataOnFolderRename, removeMetadataOnFolderDelete } from './storage.js';
+import { getState, applyMetadataMove, saveState, updateMetadataOnFolderRename, removeMetadataOnFolderDelete } from './storage.js';
 import { readExifFromFile } from './exifParser.js';
 import { fileIdentity } from './fileIdentity.js';
+import { fromProjectRoot } from './paths.js';
 
 // EXIF cache keyed by the file itself (see fileIdentity), kept on disk so a
 // restart or a photo move doesn't re-read every photo's header.
-const EXIF_CACHE_FILE = path.resolve(process.env.CURATOR_CACHE_DIR || path.join(process.cwd(), '.cache'), 'exif-cache.json');
+const EXIF_CACHE_FILE = fromProjectRoot(process.env.CURATOR_CACHE_DIR || '.cache', 'exif-cache.json');
 const EXIF_CACHE_LIMIT = 20000;
 let exifCache = null;
 let exifSaveTimer = null;
@@ -59,6 +60,22 @@ async function getPhotoExifCached(fullPath, stats) {
   }
   return exif;
 }
+
+// Runs fn over items with at most `limit` calls in flight; results keep the input order.
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+const naturalCompare = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 
 const IMAGE_EXTENSIONS = new Set([
   '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.tif', '.heic', '.heif', '.avif'
@@ -316,30 +333,40 @@ export async function getPhotosInFolder(rootDir, folderRelPath = '', filter = 'a
   }
 
   const state = getState();
-  const rawPhotos = [];
-
-  for (const entry of photoEntries) {
-    const relPath = entry.relPath;
-    const fullPath = path.join(rootDir, relPath);
-    let stat = null;
-    try {
-      stat = await fs.stat(fullPath);
-    } catch {
-      continue;
+  // Album ids per photo, built once instead of scanning every album for every photo.
+  const albumsByPath = new Map();
+  for (const album of Object.values(state.virtualAlbums || {})) {
+    if (!Array.isArray(album.photos)) continue;
+    for (const photoPath of album.photos) {
+      const ids = albumsByPath.get(photoPath);
+      if (!ids) albumsByPath.set(photoPath, [album.id]);
+      else if (ids.at(-1) !== album.id) ids.push(album.id);
     }
+  }
 
+  // Stat and read EXIF headers a few files at a time; the order of photoEntries is kept.
+  const fileInfo = await mapWithConcurrency(photoEntries, 16, async entry => {
+    const fullPath = path.join(rootDir, entry.relPath);
+    try {
+      const stat = await fs.stat(fullPath);
+      return { stat, exif: await getPhotoExifCached(fullPath, stat) };
+    } catch {
+      return null;
+    }
+  });
+
+  const rawPhotos = [];
+  photoEntries.forEach((entry, index) => {
+    if (!fileInfo[index]) return;
+    const { stat, exif } = fileInfo[index];
+    const relPath = entry.relPath;
     const isViewed = !!state.viewed[relPath];
     const viewedAt = state.viewed[relPath] || null;
     const isFavorite = !!state.favorites[relPath];
     const note = state.notes[relPath] || '';
     const annotations = state.annotations?.[relPath] || [];
     const triage = state.triage?.[relPath] || null;
-    const albums = Object.values(state.virtualAlbums || {})
-      .filter(a => Array.isArray(a.photos) && a.photos.includes(relPath))
-      .map(a => a.id);
-
-    // Read EXIF metadata (cached)
-    const exif = await getPhotoExifCached(fullPath, stat);
+    const albums = albumsByPath.get(relPath) || [];
 
     // Calculate folder context info
     const folderDir = path.dirname(relPath);
@@ -360,9 +387,12 @@ export async function getPhotosInFolder(rootDir, folderRelPath = '', filter = 'a
       albums,
       exif,
     });
-  }
+  });
 
-  // Tag burst / continuous shooting groups
+  // Burst detection compares neighbours, so put each folder's shots next to each other in
+  // name order first; readdir order interleaves subfolders and is unsorted on some volumes.
+  const dirOf = relPath => relPath.slice(0, Math.max(0, relPath.lastIndexOf('/')));
+  rawPhotos.sort((a, b) => naturalCompare(dirOf(a.relPath), dirOf(b.relPath)) || naturalCompare(a.name, b.name));
   const photos = detectBurstGroups(rawPhotos);
 
   // Stats before filtering
@@ -405,9 +435,9 @@ export async function getPhotosInFolder(rootDir, folderRelPath = '', filter = 'a
   filtered.sort((a, b) => {
     switch (sort) {
       case 'name-asc':
-        return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+        return naturalCompare(a.name, b.name);
       case 'name-desc':
-        return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' });
+        return naturalCompare(b.name, a.name);
       case 'date-desc':
         return b.mtime - a.mtime;
       case 'date-asc':
@@ -597,14 +627,18 @@ async function moveFileWithoutReplacing(source, destination, expected) {
   return samePhoto(moved, created, !linked) ? moved : null;
 }
 
-async function recordMovedMetadata(rootDir, oldPath, newPath, result) {
+// Metadata follows each photo in memory as it moves; the state file is written once
+// per batch rather than once per photo.
+async function persistMovedMetadata(movedResults) {
+  if (!movedResults.length) return;
   try {
-    await updateMetadataOnMove(oldPath, newPath, rootDir);
+    await saveState();
   } catch (error) {
-    // The file and in-memory metadata have moved. Report the persistence
-    // failure without making the caller retry a move that already happened.
-    result.warning = 'Ảnh đã di chuyển nhưng không thể lưu thông tin ảnh xuống ổ đĩa';
-    console.error(result.warning, error);
+    // The files and in-memory metadata have moved. Report the persistence
+    // failure without making the caller retry moves that already happened.
+    const warning = 'Ảnh đã di chuyển nhưng không thể lưu thông tin ảnh xuống ổ đĩa';
+    for (const result of movedResults) result.warning = warning;
+    console.error(warning, error);
   }
 }
 
@@ -627,9 +661,14 @@ async function movePhotoGroupsInOrder(rootDir, groups) {
 
   const results = [];
   const undoEntries = [];
-  for (let i = 0; i < groups.length; i++) {
-    await fs.ensureDir(targets[i]);
-    await movePhotosIntoDir(rootDir, groups[i].files, targets[i], results, undoEntries);
+  const movedResults = [];
+  try {
+    for (let i = 0; i < groups.length; i++) {
+      await fs.ensureDir(targets[i]);
+      await movePhotosIntoDir(rootDir, groups[i].files, targets[i], results, undoEntries, movedResults);
+    }
+  } finally {
+    await persistMovedMetadata(movedResults);
   }
 
   const response = { success: true, movedCount: results.filter(r => r.success).length, results };
@@ -644,7 +683,7 @@ async function movePhotoGroupsInOrder(rootDir, groups) {
   return response;
 }
 
-async function movePhotosIntoDir(rootDir, photoRelPaths, targetDir, results, undoEntries) {
+async function movePhotosIntoDir(rootDir, photoRelPaths, targetDir, results, undoEntries, movedResults) {
   for (const relPath of photoRelPaths) {
     try {
       const oldFullPath = await assertWithinRoot(rootDir, relPath);
@@ -672,7 +711,7 @@ async function movePhotosIntoDir(rootDir, photoRelPaths, targetDir, results, und
       const movedStats = await moveFileWithoutReplacing(oldFullPath, targetFullPath, stats);
       const result = { oldPath: relPath, newPath, success: true };
       if (movedStats) undoEntries.push({ oldPath, newPath, originalParent, movedParent, stats: movedStats });
-      await recordMovedMetadata(rootDir, oldPath, newPath, result);
+      if (applyMetadataMove(oldPath, newPath, rootDir)) movedResults.push(result);
       results.push(result);
     } catch (error) {
       results.push({ oldPath: relPath, success: false, error: error.message });
@@ -690,6 +729,7 @@ async function undoPhotoMoveInOrder(rootDir, undoToken) {
 
   const results = [];
   const remaining = [];
+  const movedResults = [];
   for (const entry of record.entries) {
     const { oldPath, newPath, originalParent, movedParent, stats } = entry;
     const result = { oldPath: newPath, newPath: oldPath, success: false };
@@ -717,7 +757,7 @@ async function undoPhotoMoveInOrder(rootDir, undoToken) {
       }
       await moveFileWithoutReplacing(currentFile, originalFile, stats);
       result.success = true;
-      await recordMovedMetadata(rootDir, newPath, oldPath, result);
+      if (applyMetadataMove(newPath, oldPath, rootDir)) movedResults.push(result);
     } catch (error) {
       result.error = error.code === 'EEXIST' ? 'Vị trí ban đầu đã có tệp khác' : error.message;
       if (error.code !== 'PHOTO_CHANGED') {
@@ -726,6 +766,7 @@ async function undoPhotoMoveInOrder(rootDir, undoToken) {
       }
     }
   }
+  await persistMovedMetadata(movedResults);
 
   if (remaining.length) record.entries = remaining;
   else moveUndoRecords.delete(undoToken);

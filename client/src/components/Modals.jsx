@@ -5,7 +5,7 @@ import {
   ArrowUp, Compass, HardDrive, Info, ArrowRight, Plus
 } from 'lucide-react';
 import { DialogShell } from './DialogShell.jsx';
-import { browseFilesystem, pickFolderNative } from '../api.js';
+import { browseFilesystem, pickFolderNative, photoImageUrl } from '../api.js';
 import { resolvePhotoRange, sanitizeFolderName } from '../photoRange.js';
 
 // 1. Create Subfolder Modal
@@ -492,7 +492,7 @@ export function StateViewModal({ isOpen, onClose, stateData, onRefresh }) {
 // Group photos "from photo … to photo …": one or more ranges into one folder.
 let rangeRowSeq = 0;
 const newRangeRow = () => ({ id: ++rangeRowSeq, from: '', to: '' });
-const rangeThumbUrl = photo => `/api/thumbnail?path=${encodeURIComponent(photo.relPath)}`;
+const rangeThumbUrl = photo => photoImageUrl('thumbnail', photo);
 const NEW_FOLDER_OPTION = '::new-folder::'; // ':' can't appear in a real folder name
 
 function RangeThumb({ photo, index, label }) {
