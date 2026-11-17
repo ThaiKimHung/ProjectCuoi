@@ -1,0 +1,23 @@
+{
+  "name": "wedding-photo-curator",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "server": "node server/index.js",
+    "client": "node client/node_modules/vite/bin/vite.js client",
+    "dev": "concurrently -n \"SERVER,CLIENT\" -c \"cyan,magenta\" \"npm run server\" \"npm run client\"",
+    "build": "node client/node_modules/vite/bin/vite.js build client",
+    "test": "node --test tests"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "fs-extra": "^11.3.0",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

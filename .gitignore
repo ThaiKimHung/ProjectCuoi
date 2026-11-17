@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Build outputs & caches
+client/dist/
+.cache/
+
+# Environment variables & logs
+.env
+.env.*
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local app data & personal photos
+data/
+photos/
